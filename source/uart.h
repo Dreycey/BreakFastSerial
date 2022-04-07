@@ -18,6 +18,8 @@
 extern tCircularBuffer Tx_buffer, Rx_buffer;
 #define UART_OVERSAMPLE_RATE 	(16)
 #define SYS_CLOCK				(24e6)
+
+
 /*
  * Function: uart_init()
  * ---------------

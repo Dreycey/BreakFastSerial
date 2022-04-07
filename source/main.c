@@ -29,7 +29,6 @@ int main(void)
 
 	// enter infinite loop
 	while (1) {
-		hexdump(0, 200);
 		preprocess();
 	}
 

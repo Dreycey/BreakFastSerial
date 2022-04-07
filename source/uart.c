@@ -7,15 +7,11 @@
 #include <MKL25Z4.h>
 #include "uart.h"
 #include "stdio.h"
-#define STOPBIT (0) // 2 stop bits
+#define STOPBIT (1) // 2 stop bits
 #define PARITY (0) // no parity
 #define DATA_LENGTH (0) // 0 == 8 data bits
 
 
-volatile int g_INTERUPT_COUNTER = 0;
-volatile int g_INTERUPT_COUNTER_1 = 0;
-volatile int g_INTERUPT_COUNTER_2 = 0;
-volatile int g_INTERUPT_COUNTER_3 = 0;
 tCircularBuffer Tx_buffer, Rx_buffer;
 
 
@@ -102,12 +98,9 @@ void UART0_IRQHandler(void) {
 
 	}
 	if ( (UART0->C2 & UART0_C2_TIE_MASK) && (UART0->S1 & UART0_S1_TDRE_MASK) ) {
-		g_INTERUPT_COUNTER++;
 		if(cbfifo_dequeue(&Tx_buffer, &Tx_character, 1) == 1){
-			g_INTERUPT_COUNTER_1++;
 			 UART0->D = Tx_character;
 		} else {
-			g_INTERUPT_COUNTER_2++;
 			UART0->C2 &= ~UART0_C2_TIE_MASK;
 		}
 	}
@@ -135,7 +128,6 @@ int __sys_write(int handle, char *buf, int size){
 	 * Trigger interupt.
 	 */
 	if (!(UART0->C2 & UART0_C2_TIE_MASK)) {
-		g_INTERUPT_COUNTER_3++;
 		UART0->C2 |= UART0_C2_TIE(1);
 	}
 
