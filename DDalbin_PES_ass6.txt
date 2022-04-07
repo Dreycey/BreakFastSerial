@@ -1,0 +1,1034 @@
+/*
+ * circular_buffer.c
+ *
+ *  Created on: Apr 1, 2022
+ *      Author: dreyceyalbin
+ */
+#include "circular_buffer.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+
+//Defined in header
+void initialize_cbfifo(tCircularBuffer *data) {
+    data->write = 0;
+    data->read = 0;
+    data->length = 0;
+}
+
+//Defined in header
+size_t cbfifo_enqueue(tCircularBuffer *cb, void *buf, size_t nbyte) {
+    if (nbyte < 0) {return (CB_SIZE-1);}
+    if (!buf) {return (CB_SIZE-1);}
+
+    uint32_t masking_state = __get_PRIMASK();
+    __disable_irq();
+    int num_bytes_added = 0;
+    uint8_t * ptr_to_buffer = buf;
+    for (int i=0; i < nbyte; i++){
+        if (cb->length >= CB_SIZE) {break;}
+        cb->array[cb->write] = (*(uint8_t *)ptr_to_buffer) & (0xFF);
+        cb->length++;
+        num_bytes_added++;
+        ptr_to_buffer++;
+
+        // update the write pointer - resets to zero once == CB_SIZE
+        cb->write = (cb->write + 1) & (CB_SIZE - 1);
+    }
+    __set_PRIMASK(masking_state);
+    return num_bytes_added;
+}
+
+//Defined in header
+size_t cbfifo_dequeue(tCircularBuffer *cb, void *buf, size_t nbyte) {
+
+    uint8_t * ptr_cpy = (uint8_t *)buf;
+    int num_bytes_removed = 0;
+    if (cb->length <= 0) {return num_bytes_removed;}
+
+    uint32_t masking_state = __get_PRIMASK();
+    __disable_irq();
+    for (int i=0; i<nbyte; i++){
+        if (cb->length <= 0) {break;} // if empty, return
+        ptr_cpy[i] = cb->array[cb->read];
+        cb->length--;
+        num_bytes_removed++;
+
+        // update the write pointer - resets to zero once == CB_SIZE
+        cb->read= (cb->read + 1) & (CB_SIZE - 1);
+    }
+    __set_PRIMASK(masking_state);
+    return num_bytes_removed;
+}
+
+//Defined in header
+size_t cbfifo_capacity() {
+    return CB_SIZE;
+}
+
+//Defined in header
+size_t cbfifo_length(tCircularBuffer *cb) {
+    return cb->length;
+}
+/*
+ * circular_buffer.h
+ *
+ *  Created on: Apr 1, 2022
+ *      Author: dreyceyalbin
+ */
+
+#ifndef CIRCULAR_BUFFER_H_
+#define CIRCULAR_BUFFER_H_
+
+#include <stdlib.h>  // for size_t
+#include <stdint.h>
+#include <MKL25Z4.h>
+#define CB_SIZE 256 // size of buffer
+
+/*
+ * circular buffer
+ * from Ch. 6 White
+ */
+struct sCircularBuffer {
+  uint8_t array[CB_SIZE];    // must be a power of two
+  int read;    // holds current read position: 0 to (CB_SIZE-1)
+  int write;   // holds current write position: 0 to (CB_SIZE-1)
+  int length; // Default is 0, changed to true once full.
+};
+
+/*
+ * Creating a typedef for the circular buffer
+ */
+typedef struct sCircularBuffer tCircularBuffer;
+
+
+/*
+ * Function: initialize_cbfifo(tCircularBuffer *data)
+ * ---------------
+ *
+ * Description:
+ *     This method initializes all of the attributes of the
+ *     cbfifo to zero. Otherwise the length and other attributes
+ *     are given random starting values.
+ * Input:
+ *     1. pointer to circular buffer
+ * Returns (non-Error):
+ *     1. N/A - void
+ * Returns (Error Codes):
+ *     1. NONE
+ */
+void initialize_cbfifo(tCircularBuffer *data);
+
+/*
+ * Enqueues data onto the FIFO, up to the limit of the available FIFO
+ * capacity.
+ *
+ * Parameters:
+ *   buf      Pointer to the data
+ *   nbyte    Max number of bytes to enqueue
+ *
+ * Returns:
+ *   The number of bytes actually enqueued, which could be 0. In case
+ * of an error, returns (size_t) -1.
+ */
+size_t cbfifo_enqueue(tCircularBuffer *cb, void *buf, size_t nbyte);
+
+/*
+ * Attempts to remove ("dequeue") up to nbyte bytes of data from the
+ * FIFO. Removed data will be copied into the buffer pointed to by buf.
+ *
+ * Parameters:
+ *   buf      Destination for the dequeued data
+ *   nbyte    Bytes of data requested
+ *
+ * Returns:
+ *   The number of bytes actually copied, which will be between 0 and
+ * nbyte.
+ *
+ * To further explain the behavior: If the FIFO's current length is 24
+ * bytes, and the caller requests 30 bytes, cbfifo_dequeue should
+ * return the 24 bytes it has, and the new FIFO length will be 0. If
+ * the FIFO is empty (current length is 0 bytes), a request to dequeue
+ * any number of bytes will result in a return of 0 from
+ * cbfifo_dequeue.
+ */
+size_t cbfifo_dequeue(tCircularBuffer *cb, void *buf, size_t nbyte);
+
+
+/*
+ * Returns the number of bytes currently on the FIFO.
+ *
+ * Parameters:
+ *   none
+ *
+ * Returns:
+ *   Number of bytes currently available to be dequeued from the FIFO
+ */
+size_t cbfifo_length();
+
+
+/*
+ * Returns the FIFO's capacity
+ *
+ * Parameters:
+ *   none
+ *
+ * Returns:
+ *   The capacity, in bytes, for the FIFO
+ */
+size_t cbfifo_capacity();
+
+
+#endif /* CIRCULAR_BUFFER_H_ */
+/*
+ * command_processor.c
+ *
+ *  Created on: Apr 5, 2022
+ *      Author: dreyceyalbin
+ */
+#include "command_processor.h"
+#include "hexdump.h"
+#include "uart.h"
+#include <stdio.h>
+#define KEYBOARD_ENTER (0X0D)
+
+
+/*
+ * Command methods.
+ */
+typedef void (*command_method)(const char *args);
+
+void author_method(const char *args) {
+	printf("Author: Dreycey Albin");
+}
+
+/*
+ * https://www.tutorialspoint.com/c_standard_library/c_function_sscanf.htm
+ */
+void hexdump_method(const char *args) {
+	uint32_t start_location;
+	size_t hexdump_size;
+	sscanf(args,"dump %j %k",&start_location, &hexdump_size);
+	hexdump(&start_location, hexdump_size);
+}
+
+/*
+ * Structures for holding command methods.
+ */
+typedef struct {
+	const char *command_arg;
+	const char *command_info;
+    command_method method;
+} arg_command;
+
+static arg_command arg_command_arr[] = {
+		{"author", "Returns the amazing authors name.", author_method},
+		{"dump", "Returns the hexdump for a start and end location.", hexdump_method},
+};
+
+
+/*
+ * Processing UART.
+ */
+
+// Defined in header
+void preprocess() {
+	char temp_char = 0;
+	char character_array[300];
+	int ca_index = 0;
+
+	while (1) {
+		while((cbfifo_dequeue(&Rx_buffer, &temp_char, 1) != 1));
+		printf("%c", temp_char);
+
+		if ((temp_char == '\n' ) || (temp_char == '\r')) {
+			break;
+		}
+		if (temp_char == KEYBOARD_ENTER) {
+			character_array[ca_index] = '\0';
+			break;
+		}
+		else if (temp_char == '\b') { //remove backspace.
+			ca_index--;
+			printf(" \b");
+		}
+		else {
+			character_array[ca_index] = temp_char;
+			ca_index++;
+		}
+	}
+	character_array[ca_index] = '\0';
+	printf(character_array);
+	printf("\r\n");
+
+	/*
+	 * Further process the commands.
+	 */
+	command_processor(character_array); // Call command_processor
+}
+
+
+
+
+
+// Defined in header
+void command_processor(char *parsed_characters) {
+	int method_count = 2;
+	int not_recognized = 1;
+	char *argument[10];
+	char *buffer[10];
+
+	sscanf(parsed_characters, "%s %[^\t\n]", &argument, buffer);
+
+	/*
+	* Searching for matching method
+	*/
+	for (int j = 0; j < method_count; j++){
+		if (strcasecmp(argument, arg_command_arr[j].command_arg) == 0)  {
+			arg_command_arr[j].method(parsed_characters);
+		    not_recognized = 0;
+		    break;
+		}
+	}
+
+	 /*
+	  * If no similiar commands
+	  */
+	 if(not_recognized){
+		 printf("Unknown Command\r\n");
+		 printf ("?");
+	 }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+/*
+ * command_processor.h
+ *
+ *  Created on: Apr 5, 2022
+ *      Author: dreyceyalbin
+ */
+
+#ifndef COMMAND_PROCESSOR_H_
+#define COMMAND_PROCESSOR_H_
+
+
+
+
+#endif /* COMMAND_PROCESSOR_H_ */
+/*
+ * hexdump.c
+ * ------------
+ *
+ * Description:
+ *     This file includes the implementation for the
+ *     the 'hexdump' methods and API.
+ */
+#include <stdio.h>
+#include "hexdump.h"
+#define STRIDE 16 // Howdy's def for size of stride.
+
+
+
+
+// Defined in header
+char int_to_hexchar(uint8_t input_num) {
+    if (input_num == 10) {return 'A';}
+    if (input_num == 11) {return 'B';}
+    if (input_num == 12) {return 'C';}
+    if (input_num == 13) {return 'D';}
+    if (input_num == 14) {return 'E';}
+    if (input_num == 15) {return 'F';}
+    return input_num+'0';
+}
+
+// Defined in header file - author: Howdy (taken from class)
+void *hexdump(const void *loc, size_t nbytes){
+
+
+	const uint8_t *start_loc = (const uint8_t*) loc;
+
+	for (int i=0; i<nbytes; i += STRIDE) {
+		start_loc = start_loc + i;
+		// print out address at the start.
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0xF0000000) >> 28));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x0F000000) >> 24));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x00F00000) >> 20));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x000F0000) >> 16));
+		putchar('_');
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x0000F000) >> 12));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x00000F00) >> 8));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x000000F0) >> 4));
+		putchar(int_to_hexchar(((uint32_t)(start_loc) & 0x0000000F) >> 0));
+		putchar(' ');
+		putchar(' ');
+		putchar(' ');
+
+		/*
+		 * prints out STRIDE-many bytes
+		 */
+		for (int j=0; j < STRIDE; j++) {
+		    if ((i + j) > nbytes) {
+		    	break;
+		    }
+			putchar(int_to_hexchar((start_loc[j] & 0xF0) >> 4));
+			putchar(int_to_hexchar((start_loc[j] & 0x0F) >> 0));
+			putchar(' ');
+		}
+		putchar('\r');
+		putchar('\n');
+	}
+}
+/*
+ * hexdump.h
+ *
+ *  Created on: Apr 3, 2022
+ *      Author: dreyceyalbin
+ */
+
+#ifndef HEXDUMP_H_
+#define HEXDUMP_H_
+
+#include <stdint.h>
+
+/*
+* int_to_hexchar: helper function for num to hex
+* Input:
+*   given start/end, it returns the hex value for that position.
+*
+* Parameters:
+*   1. char string : char *
+*   2. start location : uint8_t
+*   3. stop location : uint8_t
+*
+* Returns:
+*   The hex character of a given binary segment.
+*/
+char int_to_hexchar(uint8_t input_num);
+
+/*
+* hexdump: Creates a hexdump for an memory start and end location
+*        - This one was taken from lecture.
+*
+* Parameters:
+*   -> 1. starting point in memory : const char *
+*   -> 2. number of bytes to traverse : size_t
+*
+* Returns:
+*   Returns the str with the modifications
+*/
+void *hexdump(const void *loc, size_t nbytes);
+
+#endif /* HEXDUMP_H_ */
+/*
+ * main.c - application entry point
+ * 
+ * Author Howdy Pierce, howdy.pierce@colorado.edu
+ */
+#include "sysclock.h"
+#include "uart.h"
+#include "stdio.h"
+#include "test_circular_buffer.h"
+#include "hexdump.h"
+#include "command_processor.h"
+#define BAUDRATE (38400)
+
+
+
+int main(void)
+{
+	sysclock_init();
+
+	// TODO: initialize the UART here
+	Init_UART0(BAUDRATE);
+
+	// testing circular buffer
+	test_cbfifo();
+
+	// First message
+	printf("Welcome to BreakfastSerial \r\n");
+	printf(" ? \n\r");
+
+	// enter infinite loop
+	while (1) {
+		hexdump(0, 200);
+		preprocess();
+	}
+
+	return 0 ;
+}
+/*
+ * Copyright 2016-2020 NXP
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without modification,
+ * are permitted provided that the following conditions are met:
+ *
+ * o Redistributions of source code must retain the above copyright notice, this list
+ *   of conditions and the following disclaimer.
+ *
+ * o Redistributions in binary form must reproduce the above copyright notice, this
+ *   list of conditions and the following disclaimer in the documentation and/or
+ *   other materials provided with the distribution.
+ *
+ * o Neither the name of NXP Semiconductor, Inc. nor the names of its
+ *   contributors may be used to endorse or promote products derived from this
+ *   software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ * ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/**
+ * @file    mtb.c
+ * @brief   MTB initialization file.
+ * @details Symbols controlling behavior of this code...
+ * 			__MTB_DISABLE
+ *     		If this symbol is defined, then the buffer array for the MTB
+ *     		will not be created.
+ *
+ * 			__MTB_BUFFER_SIZE
+ *     		Symbol specifying the sizer of the buffer array for the MTB.
+ *     		This must be a power of 2 in size, and fit into the available
+ *   		RAM. The MTB buffer will also be aligned to its 'size' 
+ *     		boundary and be placed at the start of a RAM bank (which 
+ *     		should ensure minimal or zero padding due to alignment).
+ * 
+ * 			__MTB_RAM_BANK
+ *     		Allows MTB Buffer to be placed into specific RAM bank. When 
+ *     		this is not defined, the "default" (first if there are 
+ *     		several) RAM bank is used.
+ */
+ 
+/* This is a template for board specific configuration created by MCUXpresso IDE Project Wizard.*/
+
+// Allow MTB to be removed by setting a define (via command line)
+#if !defined (__MTB_DISABLE)
+
+  // Allow for MTB buffer size being set by define set via command line
+  // Otherwise provide small default buffer
+  #if !defined (__MTB_BUFFER_SIZE)
+    #define __MTB_BUFFER_SIZE 128
+  #endif
+  
+  // Check that buffer size requested is >0 bytes in size
+  #if (__MTB_BUFFER_SIZE > 0)
+    // Pull in MTB related macros
+    #include <cr_mtb_buffer.h>
+
+    // Check if MYTB buffer is to be placed in specific RAM bank
+    #if defined(__MTB_RAM_BANK)
+	    // Place MTB buffer into explicit bank of RAM
+	    __CR_MTB_BUFFER_EXT(__MTB_BUFFER_SIZE,__MTB_RAM_BANK);
+    #else
+	    // Place MTB buffer into 'default' bank of RAM
+	    __CR_MTB_BUFFER(__MTB_BUFFER_SIZE);
+
+    #endif  // defined(__MTB_RAM_BANK)
+
+  #endif // (__MTB_BUFFER_SIZE > 0)
+
+#endif // !defined (__MTB_DISABLE)
+
+// ****************************************************************************
+// semihost_hardfault.c
+//                - Provides hard fault handler to allow semihosting code not
+//                  to hang application when debugger not connected.
+//
+// ****************************************************************************
+// Copyright 2017-2020 NXP
+// All rights reserved.
+//
+// NXP Confidential. This software is owned or controlled by NXP and may only be 
+// used strictly in accordance with the applicable license terms.  
+//
+// By expressly accepting such terms or by downloading, installing, activating 
+// and/or otherwise using the software, you are agreeing that you have read, and 
+// that you agree to comply with and are bound by, such license terms.  
+// 
+// If you do not agree to be bound by the applicable license terms, then you may not 
+// retain, install, activate or otherwise use the software.
+
+// ****************************************************************************
+//
+//                       ===== DESCRIPTION =====
+//
+// One of the issues with applications that make use of semihosting operations
+// (such as printf calls) is that the code will not execute correctly when the
+// debugger is not connected. Generally this will show up with the application
+// appearing to just hang. This may include the application running from reset
+// or powering up the board (with the application already in FLASH), and also
+// as the application failing to continue to execute after a debug session is
+// terminated.
+//
+// The problem here is that the "bottom layer" of the semihosted variants of
+// the C library, semihosting is implemented by a "BKPT 0xAB" instruction.
+// When the debug tools are not connected, this instruction triggers a hard
+// fault - and the default hard fault handler within an application will
+// typically just contains an infinite loop - causing the application to
+// appear to have hang when no debugger is connected.
+//
+// The below code provides an example hard fault handler which instead looks
+// to see what the instruction that caused the hard fault was - and if it
+// was a "BKPT 0xAB", then it instead returns back to the user application.
+//
+// In most cases this will allow applications containing semihosting
+// operations to execute (to some degree) when the debugger is not connected.
+//
+// == NOTE ==
+//
+// Correct execution of the application containing semihosted operations
+// which are vectored onto this hard fault handler cannot be guaranteed. This
+// is because the handler may not return data or return codes that the higher
+// level C library code or application code expects. This hard fault handler
+// is meant as a development aid, and it is not recommended to leave
+// semihosted code in a production build of your application!
+//
+// ****************************************************************************
+
+// Allow handler to be removed by setting a define (via command line)
+#if !defined (__SEMIHOST_HARDFAULT_DISABLE)
+
+__attribute__((naked))
+void HardFault_Handler(void){
+    __asm(  ".syntax unified\n"
+        // Check which stack is in use
+            "MOVS   R0, #4  \n"
+            "MOV    R1, LR  \n"
+            "TST    R0, R1  \n"
+            "BEQ    _MSP    \n"
+            "MRS    R0, PSP \n"
+            "B  _process      \n"
+            "_MSP:  \n"
+            "MRS    R0, MSP \n"
+        // Load the instruction that triggered hard fault
+        "_process:     \n"
+            "LDR    R1,[R0,#24] \n"
+            "LDRH    R2,[r1] \n"
+        // Semihosting instruction is "BKPT 0xAB" (0xBEAB)
+            "LDR    R3,=0xBEAB \n"
+            "CMP     R2,R3 \n"
+            "BEQ    _semihost_return \n"
+        // Wasn't semihosting instruction so enter infinite loop
+            "B . \n"
+        // Was semihosting instruction, so adjust location to
+        // return to by 1 instruction (2 bytes), then exit function
+        "_semihost_return: \n"
+            "ADDS    R1,#2 \n"
+            "STR    R1,[R0,#24] \n"
+    	// Set a return value from semihosting operation.
+    	// 32 is slightly arbitrary, but appears to allow most
+    	// C Library IO functions sitting on top of semihosting to
+    	// continue to operate to some degree
+    		    "MOVS   R1,#32 \n"
+    		    "STR R1,[ R0,#0 ] \n" // R0 is at location 0 on stack
+    	// Return from hard fault handler to application
+            "BX LR \n"
+        ".syntax divided\n") ;
+}
+
+#endif
+
+/* 
+ * sysclock.c - configuration routines for KL25Z system clock
+ * 
+ * Author Howdy Pierce, howdy.pierce@colorado.edu
+ *
+ * See section 24 of the KL25Z Reference Manual to understand this code
+ *
+ * Inspired by https://learningmicro.wordpress.com/configuring-device-clock-and-using-systick-system-tick-timer-module-to-generate-software-timings/
+
+ */
+
+#include "MKL25Z4.h"
+#include "sysclock.h"
+
+
+void
+sysclock_init()
+{
+  // Corresponds to FEI mode as shown in sec 24.4.1 
+
+  // Select PLL/FLL as clock source 
+  MCG->C1 &= ~(MCG_C1_CLKS_MASK);
+  MCG->C1 |= MCG_C1_CLKS(0);
+	
+  // Use internal reference clock as source for the FLL
+  MCG->C1 |= MCG_C1_IREFS(1);
+
+  // Select the FLL (by setting "PLL select" to 0)
+  MCG->C6 &= ~(MCG_C6_PLLS_MASK);
+  MCG->C6 |= MCG_C6_PLLS(0);
+
+  // Select 24 MHz - see table for MCG_C4[DMX32]
+  MCG->C4 &= ~(MCG_C4_DRST_DRS_MASK & MCG_C4_DMX32_MASK);
+  MCG->C4 |= MCG_C4_DRST_DRS(0);
+  MCG->C4 |= MCG_C4_DMX32(1);
+}
+
+/* 
+ * sysclock.h - configuration routines for KL25Z system clock
+ * 
+ * Author Howdy Pierce, howdy.pierce@colorado.edu
+ */
+
+#ifndef _SYSCLOCK_H_
+#define _SYSCLOCK_H_
+
+#define SYSCLOCK_FREQUENCY (24000000U)
+
+/*
+ * Initializes the system clock. You should call this first in your
+ * program.
+ */
+void sysclock_init();
+
+#endif  // _SYSCLOCK_H_
+/*
+ * circular_buffer_test.c
+ *
+ *  Created on: Apr 1, 2022
+ *      Author: dreyceyalbin
+ */
+#include "test_circular_buffer.h"
+
+
+
+
+// Description in header
+int test_cbfifo() {
+
+	// create buffer and initialize
+	tCircularBuffer c_buff;
+	initialize_cbfifo(&c_buff);
+
+    // Testing my name
+    char val_to_store[] = {'D', 'r', 'e', 'y', 'c', 'e', 'y', '\0'};
+    size_t number_added = cbfifo_enqueue(&c_buff, val_to_store, sizeof(val_to_store));
+    char my_name[sizeof(val_to_store)];
+    cbfifo_dequeue(&c_buff, my_name, sizeof(val_to_store));
+    assert(strcmp(my_name, val_to_store) == 0);
+
+    // testing a dequeue with an empty queue
+    assert(cbfifo_dequeue(&c_buff, my_name, sizeof(val_to_store)) == 0);
+
+    // Add (max) PLUS ONE
+    char single_char[] = {'A'};
+    int max_size = CB_SIZE;
+    for (int i=1; i<=max_size; i++) {
+        number_added = cbfifo_enqueue(&c_buff, single_char, 1);
+    }
+    number_added = cbfifo_enqueue(&c_buff, single_char, 1);
+    assert(number_added == 0);
+
+    printf("CBFIFO: All test cases pass! 3/3 \n\n\n\r");
+    return 0;
+}
+/*
+ * circular_buffer_test.h
+ *
+ *  Created on: Apr 1, 2022
+ *      Author: dreyceyalbin
+ */
+
+#ifndef TEST_CIRCULAR_BUFFER_H_
+#define TEST_CIRCULAR_BUFFER_H_
+
+
+#include "circular_buffer.h"
+#include <stdio.h>
+#include <assert.h>
+#include <string.h>
+
+
+/*
+ * Tests the Circular Buffer FIFO
+ *
+ * Parameters:
+ *   N/A
+ *
+ * Returns:
+ *   0 upon success
+ */
+int test_cbfifo();
+
+#endif /* TEST_CIRCULAR_BUFFER_H_ */
+/* Author: Dreycey Albin
+ *
+ * UART.h
+ *
+ *  Created on: Apr 1, 2022
+ */
+#include <MKL25Z4.h>
+#include "uart.h"
+#include "stdio.h"
+#define STOPBIT (0) // 2 stop bits
+#define PARITY (0) // no parity
+#define DATA_LENGTH (0) // 0 == 8 data bits
+
+
+volatile int g_INTERUPT_COUNTER = 0;
+volatile int g_INTERUPT_COUNTER_1 = 0;
+volatile int g_INTERUPT_COUNTER_2 = 0;
+volatile int g_INTERUPT_COUNTER_3 = 0;
+tCircularBuffer Tx_buffer, Rx_buffer;
+
+
+void Init_UART0(uint32_t baud_rate) {
+	uint16_t sbr;
+	uint8_t temp;
+
+	// Enable clock gating for UART0 and Port A
+	SIM->SCGC4 |= SIM_SCGC4_UART0_MASK;
+	SIM->SCGC5 |= SIM_SCGC5_PORTA_MASK;
+
+
+	// Make sure transmitter and receiver are disabled before init
+	UART0->C2 &= ~UART0_C2_TE_MASK & ~UART0_C2_RE_MASK;
+
+	// Set UART clock to 48 MHz clock
+	SIM->SOPT2 |= SIM_SOPT2_UART0SRC(1);//mcg or mcg/2 clock
+	//SIM->SOPT2 |= SIM_SOPT2_PLLFLLSEL_MASK;//mcg/2 clock
+
+	// Set pins to UART0 Rx and Tx
+	PORTA->PCR[1] = PORT_PCR_ISF_MASK | PORT_PCR_MUX(2); // Rx
+	PORTA->PCR[2] = PORT_PCR_ISF_MASK | PORT_PCR_MUX(2); // Tx
+
+	// Set baud rate and oversampling ratio
+	sbr = (uint16_t)((SYS_CLOCK)/(baud_rate * UART_OVERSAMPLE_RATE));
+	UART0->BDH &= ~UART0_BDH_SBR_MASK;
+	UART0->BDH |= UART0_BDH_SBR(sbr>>8);
+	UART0->BDL = UART0_BDL_SBR(sbr);
+	UART0->C4 |= UART0_C4_OSR(UART_OVERSAMPLE_RATE-1);
+
+	// Disable interrupts for RX active edge and LIN break detect, select two stop bit
+	UART0->BDH |= UART0_BDH_RXEDGIE(0) | UART0_BDH_SBNS(STOPBIT) | UART0_BDH_LBKDIE(0);
+
+	// Don't enable loopback mode, use 8 data bit mode, don't use parity
+	UART0->C1 = UART0_C1_LOOPS(0) | UART0_C1_M(DATA_LENGTH) | UART0_C1_PE(PARITY);
+	// Don't invert transmit data, don't enable interrupts for errors
+	UART0->C3 = UART0_C3_TXINV(0) | UART0_C3_ORIE(0)| UART0_C3_NEIE(0) | UART0_C3_FEIE(0) | UART0_C3_PEIE(0);
+
+	// Clear error flags
+	UART0->S1 = UART0_S1_OR(1) | UART0_S1_NF(1) | UART0_S1_FE(1) | UART0_S1_PF(1);
+
+	// Send LSB first, do not invert received data
+	UART0->S2 = UART0_S2_MSBF(0) | UART0_S2_RXINV(0);
+
+	// Enable interrupts. Listing 8.11 on p. 234
+	initialize_cbfifo(&Tx_buffer);
+	initialize_cbfifo(&Rx_buffer);
+
+	NVIC_SetPriority(UART0_IRQn, 2); // 0, 1, 2, or 3
+	NVIC_ClearPendingIRQ(UART0_IRQn);
+	NVIC_EnableIRQ(UART0_IRQn);
+
+	// Enable receive interrupts but not transmit interrupts yet
+	UART0->C2 |= UART_C2_RIE(1);
+	UART0->C2 |= UART_C2_TIE(1);//enable for test-dont do this here
+
+	// Enable UART receiver and transmitter
+	UART0->C2 |= UART0_C2_RE(1) | UART0_C2_TE(1);
+
+	// Clear the UART RDRF flag
+	temp = UART0->D;
+	if (temp) {}
+	UART0->S1 &= ~UART0_S1_RDRF_MASK;
+
+}
+
+
+//Defined in header
+void UART0_IRQHandler(void) {
+	uint8_t Rx_character;
+	uint8_t Tx_character;
+
+	if (UART0->S1 & (UART_S1_OR_MASK |UART_S1_NF_MASK | UART_S1_FE_MASK | UART_S1_PF_MASK)) {
+			// clear the error flags
+			UART0->S1 |= UART0_S1_OR_MASK | UART0_S1_NF_MASK | UART0_S1_FE_MASK | UART0_S1_PF_MASK;
+			// read the data register to clear RDRF
+			Rx_character = UART0->D;
+	}
+	if (UART0->S1 & UART0_S1_RDRF_MASK) {
+		Rx_character = UART0->D;
+		if (cbfifo_length(&Rx_buffer) <= cbfifo_capacity(&Rx_buffer)){
+			cbfifo_enqueue(&Rx_buffer,&Rx_character,1);
+		}
+
+	}
+	if ( (UART0->C2 & UART0_C2_TIE_MASK) && (UART0->S1 & UART0_S1_TDRE_MASK) ) {
+		g_INTERUPT_COUNTER++;
+		if(cbfifo_dequeue(&Tx_buffer, &Tx_character, 1) == 1){
+			g_INTERUPT_COUNTER_1++;
+			 UART0->D = Tx_character;
+		} else {
+			g_INTERUPT_COUNTER_2++;
+			UART0->C2 &= ~UART0_C2_TIE_MASK;
+		}
+	}
+}
+
+// Defined in header
+int __sys_write(int handle, char *buf, int size){
+
+	/*
+	 * Wait till Tx_buffer gets room
+	 */
+	while(cbfifo_length(&Tx_buffer) == cbfifo_capacity(&Tx_buffer));
+
+	/*
+	 * move string into Tx
+	 */
+	while (1) {
+		if (*buf == '\0')
+			break;
+		cbfifo_enqueue(&Tx_buffer,buf,1);
+		buf++;
+	}
+
+	/*
+	 * Trigger interupt.
+	 */
+	if (!(UART0->C2 & UART0_C2_TIE_MASK)) {
+		g_INTERUPT_COUNTER_3++;
+		UART0->C2 |= UART0_C2_TIE(1);
+	}
+
+	return 0;
+}
+
+// Defined in header
+int __sys_readc(void){
+
+	int rx_char;
+
+	while(cbfifo_length(&Rx_buffer) == 0); // wait if empty
+
+	if(cbfifo_dequeue(&Rx_buffer, &rx_char, 1) == 1){
+		return rx_char;
+	} else {
+		return -1;
+	}
+}
+
+/* Author: Dreycey Albin
+ *
+ * UART.h
+ *
+ *  Created on: Apr 1, 2022
+ */
+
+#ifndef UART_H_
+#define UART_H_
+#include "circular_buffer.h"
+#include <stdint.h>
+
+
+/*
+ * the Tx/Rx circular buffers involved.
+ * using similiar pattern to Dean, with modification suggested for incapsulation.
+ */
+extern tCircularBuffer Tx_buffer, Rx_buffer;
+#define UART_OVERSAMPLE_RATE 	(16)
+#define SYS_CLOCK				(24e6)
+/*
+ * Function: uart_init()
+ * ---------------
+ *
+ * Description:
+ *     This method initializes the UART0 on the FRDM KL25Z
+ *     - Heavily adapted from Code listing 8.8, p. 231 (Dean Alexander)
+ * Input:
+ *     1. N/A - void
+ * Returns (non-Error):
+ *     1. N/A - void
+ * Returns (Error Codes):
+ *     1. the read that empties the shift register/(Rx for UART0_D)
+ */
+void Init_UART0(uint32_t baud_rate);
+
+/*
+ * Function: UART0_Read_Nonblocking()
+ * ---------------
+ *
+ * Description:
+ *     This method was taken from PES lecture 20; Howdy Pierce
+ * Input:
+ *     1. N/A - void
+ * Returns (non-Error):
+ *     1. Returns one byte if it's available to be read;
+ *        Returns -1 if no bytes available
+ * Returns (Error Codes):
+ *     1. N/A
+ */
+uint32_t UART0_Read_Nonblocking();
+
+/*
+ * Function: UART0_Send_Blocking(const char *msg)
+ * ---------------
+ *
+ * Description:
+ *     This method allows for sending a message
+ *     through UART, a null-terminated string
+ * Input:
+ *     1. N/A - void
+ * Returns (non-Error):
+ *     1. a null-terminated string
+ *        Function won't return until all bytes sent
+ * Returns (Error Codes):
+ *     1. N/A
+ */
+void UART0_Send_Blocking(const char *msg);
+
+/*
+ * Function: __sys_write(int handle, char *input_buffer, int size)
+ * ---------------
+ *
+ * Description:
+ *     This method allows for sending a message
+ *     over UART to the host PC.
+ * Input:
+ *     1. handle of 0 or 1 (doesn't matter here)
+ *     2. an input buffer to hold info
+ *     3. the size of the message
+ * Returns (non-Error):
+ *     1. 0  : if works
+ * Returns (Error Codes):
+ *     1. -1 : if error
+ */
+int __sys_write(int handle, char *input_buffer, int size);
+
+/*
+ * Function: __sys_readc(void)
+ * ---------------
+ *
+ * Description:
+ *     This method allows for reading a message
+ *     over UART from the host PC.
+ * Input:
+ *     1. void - NA
+ * Returns (non-Error):
+ *     1. buffer with message
+ * Returns (Error Codes):
+ *     1. -1 : if error
+ */
+int __sys_readc(void);
+
+#endif /* UART_H_ */
