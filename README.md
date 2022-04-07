@@ -21,6 +21,6 @@ This repository contains the source code to the PES assignment on UART on the KL
 
 ![UART](screen_shots/UART_TERMINAL.png)
 
-### illustrtation of commands
+### illustration of commands
 
 ![UART in work](screen_shots/UART_OUTPUT.png)
